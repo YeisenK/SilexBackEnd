@@ -1,21 +1,17 @@
 import { Module } from '@nestjs/common';
-import { TypeOrmModule } from '@nestjs/typeorm';
+import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { AuthModule } from './auth/auth.module';
+import { DatabaseModule } from './database/database.module';
 import { EventsGateway } from './events/events.gateway';
 
 @Module({
   imports: [
-    TypeOrmModule.forRoot({
-      type: 'postgres',
-      host: 'localhost',
-      port: 5432,
-      username: 'v0id',
-      password: 'sz3LVdVW@MdOoBroq',
-      database: 'silex',
-      autoLoadEntities: true,
-      synchronize: true,
-    }),
+    // Loads .env and makes ConfigService available globally
+    ConfigModule.forRoot({ isGlobal: true }),
+    DatabaseModule,
+    AuthModule,
   ],
   controllers: [AppController],
   providers: [AppService, EventsGateway],

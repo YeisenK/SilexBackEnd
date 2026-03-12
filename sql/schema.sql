@@ -82,3 +82,5 @@ CREATE TABLE public_keys (
     CONSTRAINT chk_prekey_id_positive
         CHECK (signed_prekey_id > 0)
 );
+
+

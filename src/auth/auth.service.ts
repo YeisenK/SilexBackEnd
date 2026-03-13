@@ -1,5 +1,4 @@
 import {
-  BadRequestException,
   ConflictException,
   Injectable,
   Logger,
@@ -11,16 +10,17 @@ import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
 
 // ---------------------------------------------------------------------------
-// Types
+// Types matching the real DB schema
 // ---------------------------------------------------------------------------
 
 interface OtpRequestRow {
   id: string;
-  user_id: string;
-  code_hash: Buffer;
+  phone_hash: Buffer;
+  otp_hash: Buffer;       // BYTEA 32 bytes
   expires_at: Date;
+  verified_at: Date | null;
   attempts: number;
-  verified: boolean;
+  max_attempts: number;
 }
 
 interface UserRow {
@@ -37,12 +37,6 @@ interface SessionRow {
 // ---------------------------------------------------------------------------
 
 const OTP_LENGTH = 6;
-const OTP_TTL_MINUTES = 10;
-const MAX_OTP_ATTEMPTS = 5;
-/**
- * Minimum seconds between OTP requests for the same phone number.
- * Prevents SMS flooding.
- */
 const OTP_RATE_LIMIT_SECONDS = 60;
 
 // ---------------------------------------------------------------------------
@@ -60,45 +54,32 @@ export class AuthService {
   ) {}
 
   // -------------------------------------------------------------------------
-  // Public API
+  // POST /auth/request-otp
   // -------------------------------------------------------------------------
 
-  /**
-   * POST /auth/request-otp
-   *
-   * 1. Hash the phone number with SHA-256.
-   * 2. Upsert a user row (phone_hash is the only PII stored).
-   * 3. Rate-limit: reject if a valid OTP was issued within the last 60s.
-   * 4. Generate a 6-digit OTP, hash it with bcrypt-equivalent (SHA-256 + salt
-   *    via pgcrypto on the DB side to keep plaintext OTP off the wire as long
-   *    as possible), store in otp_requests.
-   * 5. Return the plaintext OTP — in production this is handed to your SMS
-   *    provider, never logged or persisted.
-   */
   async requestOtp(phone: string): Promise<{ message: string; otp?: string }> {
     const phoneHash = this.hashPhone(phone);
 
-    // Upsert user — phone_hash is stored as BYTEA
+    // Upsert user — phone_hash is the only identifier stored
     const user = await this.upsertUser(phoneHash);
 
-    // Rate-limit: check for a recent pending OTP
-    await this.assertNoRecentOtp(user.id);
+    // Rate-limit: reject if a non-expired, unverified OTP was issued recently
+    await this.assertNoRecentOtp(phoneHash);
 
-    // Generate OTP
+    // Generate OTP and hash it to BYTEA (32 bytes = SHA-256)
     const plainOtp = this.generateOtp();
-    const otpHash = this.hashOtp(plainOtp);
+    const otpHashBuffer = this.hashOtpToBuffer(plainOtp);
 
-    // Persist OTP request
+    // Insert into otp_requests — schema uses phone_hash directly, no user_id
     await this.db.query(
-      `INSERT INTO otp_requests (user_id, code_hash, expires_at)
-       VALUES ($1, $2, NOW() + INTERVAL '${OTP_TTL_MINUTES} minutes')`,
-      [user.id, otpHash],
+      `INSERT INTO otp_requests (phone_hash, otp_hash)
+       VALUES ($1, $2)`,
+      [phoneHash, otpHashBuffer],
     );
 
     this.logger.log(`OTP issued for user ${user.id}`);
 
-    // In production: pass plainOtp to SMS provider here, do NOT return it.
-    // Returning it here for development/testing convenience only.
+    // In production: hand plainOtp to SMS provider, never log or return it.
     const isDev = this.config.get<string>('NODE_ENV') !== 'production';
     return {
       message: 'OTP sent successfully.',
@@ -106,75 +87,75 @@ export class AuthService {
     };
   }
 
-  /**
-   * POST /auth/verify-otp
-   *
-   * 1. Hash the phone number → look up user.
-   * 2. Find the most recent, non-expired, non-verified OTP request.
-   * 3. Validate attempt count (max 5).
-   * 4. Compare hashed OTP — constant-time comparison.
-   * 5. Mark OTP as verified.
-   * 6. Create a session row and emit a signed JWT.
-   */
+  // -------------------------------------------------------------------------
+  // POST /auth/verify-otp
+  // -------------------------------------------------------------------------
+
   async verifyOtp(
     phone: string,
     code: string,
+    deviceId: string = 'default',
   ): Promise<{ accessToken: string; userId: string }> {
     const phoneHash = this.hashPhone(phone);
 
-    // Resolve user
+    // Resolve user — must exist (created on request-otp)
     const user = await this.findUserByPhoneHash(phoneHash);
     if (!user) {
-      // Avoid leaking whether phone is registered
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
 
-    // Find the active OTP request
-    const otpRequest = await this.findActiveOtpRequest(user.id);
+    // Find the most recent active OTP for this phone_hash
+    const otpRequest = await this.findActiveOtpRequest(phoneHash);
     if (!otpRequest) {
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
 
-    // Increment attempt counter first to prevent race conditions
-    await this.incrementOtpAttempt(otpRequest.id);
-
-    if (otpRequest.attempts + 1 > MAX_OTP_ATTEMPTS) {
-      throw new UnauthorizedException(
-        'Too many attempts. Request a new OTP.',
-      );
+    // Increment attempts before comparing — closes the race condition window
+    const updatedAttempts = await this.incrementOtpAttempt(otpRequest.id);
+    if (updatedAttempts > otpRequest.max_attempts) {
+      throw new UnauthorizedException('Too many attempts. Request a new OTP.');
     }
 
-    // Constant-time OTP comparison
-    const candidateHash = this.hashOtp(code);
-    const valid = crypto.timingSafeEqual(
-      Buffer.from(candidateHash, 'hex'),
-      Buffer.from(otpRequest.code_hash),
-    );
+    // Constant-time comparison of hashed OTPs (both are 32-byte Buffers)
+    const candidateHash = this.hashOtpToBuffer(code);
+    const valid = crypto.timingSafeEqual(candidateHash, otpRequest.otp_hash);
 
     if (!valid) {
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
 
-    // Mark OTP as verified and create session — use a transaction
-    const session = await this.db.withTransaction(async (client) => {
+    // Mark OTP verified + create session atomically
+    const { session, tokenPlain } = await this.db.withTransaction(async (client) => {
       // Mark verified
       await client.query(
-        `UPDATE otp_requests SET verified = TRUE WHERE id = $1`,
+        `UPDATE otp_requests SET verified_at = NOW() WHERE id = $1`,
         [otpRequest.id],
       );
 
-      // Create session
+      // sessions requires: token_hash (BYTEA 32), device_id, user_id
+      const tokenPlain = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto
+        .createHash('sha256')
+        .update(tokenPlain)
+        .digest();
+
       const { rows } = await client.query<SessionRow>(
-        `INSERT INTO sessions (user_id, expires_at)
-         VALUES ($1, NOW() + INTERVAL '30 days')
+        `INSERT INTO sessions (user_id, token_hash, device_id)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (user_id, device_id)
+         DO UPDATE SET
+           token_hash = EXCLUDED.token_hash,
+           created_at = NOW(),
+           expires_at = NOW() + INTERVAL '30 days',
+           revoked_at = NULL
          RETURNING id`,
-        [user.id],
+        [user.id, tokenHash, deviceId],
       );
 
-      return rows[0];
+      return { session: rows[0], tokenPlain };
     });
 
-    // Emit JWT
+    // JWT payload: sub = user id, sid = session id
     const accessToken = this.jwt.sign({
       sub: user.id,
       sid: session.id,
@@ -189,28 +170,21 @@ export class AuthService {
   // Private helpers
   // -------------------------------------------------------------------------
 
-  /**
-   * SHA-256 hash of the E.164 phone number.
-   * Stored as hex string, inserted as BYTEA via parameterized query.
-   */
+  /** SHA-256 of E.164 phone number → 32-byte Buffer (stored as BYTEA) */
   private hashPhone(phone: string): Buffer {
     return crypto.createHash('sha256').update(phone, 'utf8').digest();
   }
 
-  /**
-   * SHA-256 hash of the plaintext OTP code.
-   * For a production system, consider PBKDF2 or bcrypt for OTP hashing,
-   * but given the 10-minute TTL and 5-attempt cap, SHA-256 is acceptable.
-   */
-  private hashOtp(code: string): string {
+  /** SHA-256(code + OTP_SECRET) → 32-byte Buffer (stored as BYTEA) */
+  private hashOtpToBuffer(code: string): Buffer {
     return crypto
       .createHash('sha256')
       .update(code + this.config.getOrThrow<string>('OTP_SECRET'))
-      .digest('hex');
+      .digest();
   }
 
+  /** Cryptographically random 6-digit string */
   private generateOtp(): string {
-    // Cryptographically random 6-digit number
     const bytes = crypto.randomBytes(4);
     const num = bytes.readUInt32BE(0) % 1_000_000;
     return num.toString().padStart(OTP_LENGTH, '0');
@@ -220,7 +194,7 @@ export class AuthService {
     const { rows } = await this.db.query<UserRow>(
       `INSERT INTO users (phone_hash)
        VALUES ($1)
-       ON CONFLICT (phone_hash) DO UPDATE SET phone_hash = EXCLUDED.phone_hash
+       ON CONFLICT (phone_hash) DO UPDATE SET last_seen_at = NOW()
        RETURNING id, phone_hash`,
       [phoneHash],
     );
@@ -235,15 +209,16 @@ export class AuthService {
     return rows[0] ?? null;
   }
 
-  private async assertNoRecentOtp(userId: string): Promise<void> {
+  /** Rate-limit: reject if there's a recent unverified non-expired OTP */
+  private async assertNoRecentOtp(phoneHash: Buffer): Promise<void> {
     const { rows } = await this.db.query<{ count: string }>(
-      `SELECT COUNT(*) as count
+      `SELECT COUNT(*) AS count
        FROM otp_requests
-       WHERE user_id = $1
-         AND verified = FALSE
+       WHERE phone_hash = $1
+         AND verified_at IS NULL
          AND expires_at > NOW()
          AND created_at > NOW() - INTERVAL '${OTP_RATE_LIMIT_SECONDS} seconds'`,
-      [userId],
+      [phoneHash],
     );
 
     if (parseInt(rows[0].count, 10) > 0) {
@@ -254,25 +229,30 @@ export class AuthService {
   }
 
   private async findActiveOtpRequest(
-    userId: string,
+    phoneHash: Buffer,
   ): Promise<OtpRequestRow | null> {
     const { rows } = await this.db.query<OtpRequestRow>(
-      `SELECT id, user_id, code_hash, expires_at, attempts, verified
+      `SELECT id, phone_hash, otp_hash, expires_at, verified_at, attempts, max_attempts
        FROM otp_requests
-       WHERE user_id = $1
-         AND verified = FALSE
+       WHERE phone_hash = $1
+         AND verified_at IS NULL
          AND expires_at > NOW()
        ORDER BY created_at DESC
        LIMIT 1`,
-      [userId],
+      [phoneHash],
     );
     return rows[0] ?? null;
   }
 
-  private async incrementOtpAttempt(otpRequestId: string): Promise<void> {
-    await this.db.query(
-      `UPDATE otp_requests SET attempts = attempts + 1 WHERE id = $1`,
+  /** Increments attempts and returns the new value */
+  private async incrementOtpAttempt(otpRequestId: string): Promise<number> {
+    const { rows } = await this.db.query<{ attempts: number }>(
+      `UPDATE otp_requests
+       SET attempts = attempts + 1
+       WHERE id = $1
+       RETURNING attempts`,
       [otpRequestId],
     );
+    return rows[0].attempts;
   }
 }

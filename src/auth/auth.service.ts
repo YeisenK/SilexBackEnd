@@ -9,14 +9,10 @@ import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
 
-// ---------------------------------------------------------------------------
-// Types matching the real DB schema
-// ---------------------------------------------------------------------------
-
 interface OtpRequestRow {
   id: string;
   phone_hash: Buffer;
-  otp_hash: Buffer;       // BYTEA 32 bytes
+  otp_hash: Buffer;
   expires_at: Date;
   verified_at: Date | null;
   attempts: number;
@@ -60,13 +56,8 @@ export class AuthService {
   async requestOtp(phone: string): Promise<{ message: string; otp?: string }> {
     const phoneHash = this.hashPhone(phone);
 
-    // Upsert user — phone_hash is the only identifier stored
     const user = await this.upsertUser(phoneHash);
-
-    // Rate-limit: reject if a non-expired, unverified OTP was issued recently
     await this.assertNoRecentOtp(phoneHash);
-
-    // Generate OTP and hash it to BYTEA (32 bytes = SHA-256)
     const plainOtp = this.generateOtp();
     const otpHashBuffer = this.hashOtpToBuffer(plainOtp);
 
@@ -98,25 +89,19 @@ export class AuthService {
   ): Promise<{ accessToken: string; userId: string }> {
     const phoneHash = this.hashPhone(phone);
 
-    // Resolve user — must exist (created on request-otp)
+    // Resolve user (must exist)
     const user = await this.findUserByPhoneHash(phoneHash);
     if (!user) {
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
-
-    // Find the most recent active OTP for this phone_hash
     const otpRequest = await this.findActiveOtpRequest(phoneHash);
     if (!otpRequest) {
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
-
-    // Increment attempts before comparing — closes the race condition window
     const updatedAttempts = await this.incrementOtpAttempt(otpRequest.id);
     if (updatedAttempts > otpRequest.max_attempts) {
       throw new UnauthorizedException('Too many attempts. Request a new OTP.');
     }
-
-    // Constant-time comparison of hashed OTPs (both are 32-byte Buffers)
     const candidateHash = this.hashOtpToBuffer(code);
     const valid = crypto.timingSafeEqual(candidateHash, otpRequest.otp_hash);
 
@@ -124,15 +109,13 @@ export class AuthService {
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
 
-    // Mark OTP verified + create session atomically
     const { session, tokenPlain } = await this.db.withTransaction(async (client) => {
-      // Mark verified
       await client.query(
         `UPDATE otp_requests SET verified_at = NOW() WHERE id = $1`,
         [otpRequest.id],
       );
 
-      // sessions requires: token_hash (BYTEA 32), device_id, user_id
+      //requirements: token_hash, device_id, user_id
       const tokenPlain = crypto.randomBytes(32).toString('hex');
       const tokenHash = crypto
         .createHash('sha256')
@@ -154,8 +137,6 @@ export class AuthService {
 
       return { session: rows[0], tokenPlain };
     });
-
-    // JWT payload: sub = user id, sid = session id
     const accessToken = this.jwt.sign({
       sub: user.id,
       sid: session.id,
@@ -170,12 +151,10 @@ export class AuthService {
   // Private helpers
   // -------------------------------------------------------------------------
 
-  /** SHA-256 of E.164 phone number → 32-byte Buffer (stored as BYTEA) */
   private hashPhone(phone: string): Buffer {
     return crypto.createHash('sha256').update(phone, 'utf8').digest();
   }
 
-  /** SHA-256(code + OTP_SECRET) → 32-byte Buffer (stored as BYTEA) */
   private hashOtpToBuffer(code: string): Buffer {
     return crypto
       .createHash('sha256')
@@ -183,7 +162,6 @@ export class AuthService {
       .digest();
   }
 
-  /** Cryptographically random 6-digit string */
   private generateOtp(): string {
     const bytes = crypto.randomBytes(4);
     const num = bytes.readUInt32BE(0) % 1_000_000;
@@ -209,7 +187,6 @@ export class AuthService {
     return rows[0] ?? null;
   }
 
-  /** Rate-limit: reject if there's a recent unverified non-expired OTP */
   private async assertNoRecentOtp(phoneHash: Buffer): Promise<void> {
     const { rows } = await this.db.query<{ count: string }>(
       `SELECT COUNT(*) AS count
@@ -244,7 +221,6 @@ export class AuthService {
     return rows[0] ?? null;
   }
 
-  /** Increments attempts and returns the new value */
   private async incrementOtpAttempt(otpRequestId: string): Promise<number> {
     const { rows } = await this.db.query<{ attempts: number }>(
       `UPDATE otp_requests

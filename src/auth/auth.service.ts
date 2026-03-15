@@ -8,6 +8,8 @@ import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import * as crypto from 'crypto';
 import { DatabaseService } from '../database/database.service';
+import { MetricsService } from '../metrics/metrics.service';
+
 
 interface OtpRequestRow {
   id: string;
@@ -47,6 +49,7 @@ export class AuthService {
     private readonly db: DatabaseService,
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly metrics: MetricsService,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -72,6 +75,7 @@ export class AuthService {
 
     // In production: hand plainOtp to SMS provider, never log or return it.
     const isDev = this.config.get<string>('NODE_ENV') !== 'production';
+    this.metrics.incOtpRequests();
     return {
       message: 'OTP sent successfully.',
       ...(isDev && { otp: plainOtp }),
@@ -106,6 +110,7 @@ export class AuthService {
     const valid = crypto.timingSafeEqual(candidateHash, otpRequest.otp_hash);
 
     if (!valid) {
+      this.metrics.incOtpFailed();
       throw new UnauthorizedException('Invalid or expired OTP.');
     }
 
@@ -143,7 +148,7 @@ export class AuthService {
     });
 
     this.logger.log(`Session created for user ${user.id}, session ${session.id}`);
-
+    this.metrics.incOtpVerified();
     return { accessToken, userId: user.id };
   }
 

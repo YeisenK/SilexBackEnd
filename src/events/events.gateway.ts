@@ -7,6 +7,8 @@ import {
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { MetricsService } from '../metrics/metrics.service';
+
 
 @WebSocketGateway({
   cors: { origin: '*' },
@@ -21,6 +23,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
+    private readonly metrics: MetricsService,
   ) {}
 
   async handleConnection(client: Socket): Promise<void> {
@@ -40,6 +43,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
       client.data.userId = payload.sub;
       this.connections.set(payload.sub, client);
+      this.metrics.incWsConnections();
 
       console.log(`[Gateway] User ${payload.sub} connected`);
     } catch {
@@ -51,6 +55,7 @@ export class EventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const userId = client.data.userId;
     if (userId) {
       this.connections.delete(userId);
+      this.metrics.decWsConnections();
       console.log(`[Gateway] User ${userId} disconnected`);
     }
   }

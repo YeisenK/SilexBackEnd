@@ -6,6 +6,7 @@ import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
 import { EventsModule } from './events/events.module';
 import { KeysModule } from './keys/keys.module';
+import { MessagesModule } from './messages/messages.module';
 
 
 @Module({
@@ -16,6 +17,7 @@ import { KeysModule } from './keys/keys.module';
     AuthModule,
     KeysModule,
     EventsModule,
+    MessagesModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -8,21 +8,23 @@ import { EventsModule } from './events/events.module';
 import { KeysModule } from './keys/keys.module';
 import { MessagesModule } from './messages/messages.module';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
+import { MetricsModule } from './metrics/metrics.module';
 
 
 
 @Module({
   imports: [
-    // Loads .env and makes ConfigService available globally
     ConfigModule.forRoot({ isGlobal: true }),
     PrometheusModule.register({
       path: '/metrics',
       defaultMetrics: { enabled: true },
-    }),    DatabaseModule,
+    }),
+    DatabaseModule,
     AuthModule,
     KeysModule,
     EventsModule,
     MessagesModule,
+    MetricsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

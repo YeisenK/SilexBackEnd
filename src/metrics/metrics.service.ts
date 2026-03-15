@@ -1,7 +1,6 @@
 import { Injectable } from '@nestjs/common';
-import { Counter, Gauge, Histogram } from 'prom-client';
+import { Counter, Gauge } from 'prom-client';
 import { InjectMetric } from '@willsoto/nestjs-prometheus';
-import { MetricsService } from '../metrics/metrics.service';
 
 @Injectable()
 export class MetricsService {
@@ -26,8 +25,6 @@ export class MetricsService {
 
     @InjectMetric('silex_ws_connections_active')
     private readonly wsConnectionsGauge: Gauge<string>,
-    
-    private readonly metrics: MetricsService,
   ) {}
 
   incOtpRequests(): void { this.otpRequestsCounter.inc(); }

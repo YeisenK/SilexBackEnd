@@ -4,7 +4,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { DatabaseModule } from './database/database.module';
-import { EventsGateway } from './events/events.gateway';
+import { EventsModule } from './events/events.module';
 import { KeysModule } from './keys/keys.module';
 
 
@@ -15,8 +15,9 @@ import { KeysModule } from './keys/keys.module';
     DatabaseModule,
     AuthModule,
     KeysModule,
+    EventsModule,
   ],
   controllers: [AppController],
-  providers: [AppService, EventsGateway],
+  providers: [AppService],
 })
 export class AppModule {}

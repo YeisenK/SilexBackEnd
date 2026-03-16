@@ -9,8 +9,7 @@ import { KeysModule } from './keys/keys.module';
 import { MessagesModule } from './messages/messages.module';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { MetricsModule } from './metrics/metrics.module';
-
-
+import { UsersModule } from './users/users.module';
 
 @Module({
   imports: [
@@ -25,6 +24,7 @@ import { MetricsModule } from './metrics/metrics.module';
     EventsModule,
     MessagesModule,
     MetricsModule,
+    UsersModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsString, IsUUID, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 
 export class SendMessageDto {
   @IsUUID()
@@ -23,4 +23,11 @@ export class SendMessageDto {
 
   @IsIn(['text', 'media_ref'])
   messageType: 'text' | 'media_ref';
+
+  @IsString()
+  senderIdentityKey: string;
+
+  @IsOptional()
+  @IsInt()
+  usedOtpkId?: number;
 }

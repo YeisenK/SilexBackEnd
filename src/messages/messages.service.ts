@@ -15,8 +15,8 @@ export class MessagesService {
   async sendMessage(senderId: string, dto: SendMessageDto): Promise<{ delivered: boolean; messageId: string }> {
     const { rows } = await this.db.query(
       `INSERT INTO messages
-        (sender_id, recipient_id, ratchet_key, prev_counter, msg_counter, ciphertext, iv, message_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        (sender_id, recipient_id, ratchet_key, prev_counter, msg_counter, ciphertext, iv, message_type, sender_identity_key, used_otpk_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [
         senderId,
@@ -27,6 +27,8 @@ export class MessagesService {
         dto.ciphertext,
         dto.iv,
         dto.messageType,
+        dto.senderIdentityKey,
+        dto.usedOtpkId ?? null,
       ],
     );
 
@@ -43,6 +45,8 @@ export class MessagesService {
       ciphertext: dto.ciphertext,
       iv: dto.iv,
       messageType: dto.messageType,
+      senderIdentityKey: dto.senderIdentityKey,
+      usedOtpkId: dto.usedOtpkId ?? null,
     });
 
     if (delivered) {
@@ -65,6 +69,8 @@ export class MessagesService {
          ciphertext,
          iv,
          message_type,
+         sender_identity_key,
+         used_otpk_id,
          created_at
        FROM messages
        WHERE recipient_id = $1

@@ -10,6 +10,7 @@ import { MessagesModule } from './messages/messages.module';
 import { PrometheusModule } from '@willsoto/nestjs-prometheus';
 import { MetricsModule } from './metrics/metrics.module';
 import { UsersModule } from './users/users.module';
+import { PushModule } from './push/push.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { UsersModule } from './users/users.module';
     MessagesModule,
     MetricsModule,
     UsersModule,
+    PushModule,
   ],
   controllers: [AppController],
   providers: [AppService],

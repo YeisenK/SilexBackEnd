@@ -1,13 +1,18 @@
 import { Body, Controller, Get, Param, Put, Post, Request, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt.guard';
 import { UsersService } from './users.service';
+import { PushService } from '../push/push.service';
 import { LookupUserDto } from './dto/lookup-user.dto';
 import { UpdateProfileDto } from './dto/update-profile.dto';
+import { RegisterTokenDto } from './dto/register-token.dto';
 
 @Controller('users')
 @UseGuards(JwtAuthGuard)
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly pushService: PushService,
+  ) {}
 
   @Post('lookup')
   async lookup(@Body() dto: LookupUserDto) {
@@ -38,6 +43,16 @@ export class UsersController {
       req.user.userId,
       dto.displayName,
       dto.avatarBase64,
+    );
+    return { success: true };
+  }
+
+  @Post('fcm-token')
+  async registerFcmToken(@Request() req: any, @Body() dto: RegisterTokenDto) {
+    await this.pushService.saveFcmToken(
+      req.user.userId,
+      dto.deviceId,
+      dto.fcmToken,
     );
     return { success: true };
   }

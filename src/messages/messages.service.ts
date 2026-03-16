@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { DatabaseService } from '../database/database.service';
 import { EventsGateway } from '../events/events.gateway';
 import { MetricsService } from '../metrics/metrics.service';
+import { PushService } from '../push/push.service';
 import { SendMessageDto } from './dto/send-message.dto';
 
 @Injectable()
@@ -10,6 +11,7 @@ export class MessagesService {
     private readonly db: DatabaseService,
     private readonly gateway: EventsGateway,
     private readonly metrics: MetricsService,
+    private readonly push: PushService,
   ) {}
 
   async sendMessage(senderId: string, dto: SendMessageDto): Promise<{ delivered: boolean; messageId: string }> {
@@ -53,6 +55,16 @@ export class MessagesService {
       this.metrics.incMessagesDelivered();
     } else {
       this.metrics.incMessagesDeferred();
+
+      // send push notification since user is offline
+      // look up sender display name for notification
+      const senderName = await this.getSenderName(senderId);
+      this.push.sendPushNotification(
+        dto.recipientId,
+        senderName ?? 'New message',
+        'You have a new encrypted message',
+        { senderId, messageId },
+      );
     }
 
     return { delivered, messageId };
@@ -81,5 +93,13 @@ export class MessagesService {
     );
 
     return rows;
+  }
+
+  private async getSenderName(senderId: string): Promise<string | null> {
+    const { rows } = await this.db.query(
+      `SELECT display_name FROM users WHERE id = $1`,
+      [senderId],
+    );
+    return rows[0]?.display_name ?? null;
   }
 }
